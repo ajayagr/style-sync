@@ -12,22 +12,62 @@ class OneDriveStorageProvider(StorageProvider):
             "Content-Type": "application/json"
         }
 
+    def get_user_name(self) -> str:
+        """Fetches the display name of the authenticated user."""
+        try:
+            url = f"{self.GRAPH_API}/me"
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("displayName", "OneDrive User")
+        except Exception as e:
+            print(f"Warning: Could not fetch OneDrive username: {e}")
+            return "OneDrive User"
+
     def _clean_path(self, path: str) -> str:
-        # Graph API returns paths like "/drive/root:/Folder/File"
-        # We need to strip the prefix "/drive/root:" when constructing our own URLs
-        # which are based on /me/drive/root:/...
+        """
+        Standardizes path by removing API prefixes.
+        Graph API often returns paths like /drive/root:/Path/To/File.
+        We want just Path/To/File.
+        """
         if path.startswith("/drive/root:"):
-            return path[len("/drive/root:"):]
+            path = path[len("/drive/root:"):]
         return path.strip("/")
 
-    def _get_drive_item(self, path: str):
-        clean_path = self._clean_path(path)
-        # Handle root specially
-        if not clean_path or clean_path == "/":
-            url = f"{self.GRAPH_API}/me/drive/root"
-        else:
-            url = f"{self.GRAPH_API}/me/drive/root:/{clean_path}"
+    def _build_api_url(self, path: str, is_content: bool = False, is_children: bool = False) -> str:
+        """
+        Singleton function to construct graph API URLs from paths.
+        Handles root checks and consistent formatting.
+        """
+        clean = self._clean_path(path)
         
+        # Base URL construction
+        if not clean:
+            # Root folder
+            base_url = f"{self.GRAPH_API}/me/drive/root"
+        else:
+            # Sub-item
+            base_url = f"{self.GRAPH_API}/me/drive/root:/{clean}"
+
+        # Append modifiers
+        if is_children:
+            # For root, it's /children. For others, it's :/children
+            if not clean:
+                return f"{base_url}/children"
+            else:
+                return f"{base_url}:/children"
+        
+        if is_content:
+            # For root content (doesn't validly exist mostly, but consistent logic)
+            # For files: :/content
+            if not clean:
+                 raise ValueError("Cannot read content of root.")
+            return f"{base_url}:/content"
+
+        return base_url
+
+    def _get_drive_item(self, path: str):
+        url = self._build_api_url(path)
         response = requests.get(url, headers=self.headers)
         if response.status_code == 404:
             return None
@@ -35,14 +75,9 @@ class OneDriveStorageProvider(StorageProvider):
         return response.json()
 
     def list_files(self, path: str) -> Iterator[FileItem]:
-        clean_path = self._clean_path(path)
-        if not clean_path or clean_path == "/":
-            url = f"{self.GRAPH_API}/me/drive/root/children"
-        else:
-            url = f"{self.GRAPH_API}/me/drive/root:/{clean_path}:/children"
+        url = self._build_api_url(path, is_children=True)
 
         while url:
-            # ... (rest of loop logic is fine, but update the yield)
             response = requests.get(url, headers=self.headers)
             if response.status_code == 404:
                 return 
@@ -51,37 +86,33 @@ class OneDriveStorageProvider(StorageProvider):
             
             for item in data.get("value", []):
                 is_dir = "folder" in item
-                # Capture the full API path for robust referencing, but clean it later
-                full_api_path = item.get("parentReference", {}).get("path", "") + "/" + item["name"]
+                # Make sure we construct a path that this class can handle later
+                # API returns parentReference.path like /drive/root:/Folder
+                parent_path = item.get("parentReference", {}).get("path", "")
+                full_path = f"{parent_path}/{item['name']}"
+                
                 yield FileItem(
                     name=item["name"],
                     is_dir=is_dir,
                     size=item.get("size") if not is_dir else None,
-                    path=full_api_path 
+                    path=full_path 
                 )
             
             url = data.get("@odata.nextLink")
 
     def read_file(self, path: str) -> bytes:
-        clean_path = self._clean_path(path)
-        url = f"{self.GRAPH_API}/me/drive/root:/{clean_path}:/content"
-        
+        url = self._build_api_url(path, is_content=True)
         response = requests.get(url, headers=self.headers)
         response.raise_for_status()
         return response.content
 
     def write_file(self, path: str, data: bytes) -> None:
-        clean_path = self._clean_path(path)
-        url = f"{self.GRAPH_API}/me/drive/root:/{clean_path}:/content"
-        
+        url = self._build_api_url(path, is_content=True)
         response = requests.put(url, headers=self.headers, data=data)
         response.raise_for_status()
 
     def delete_file(self, path: str) -> None:
-        # Need item ID or can use path
-        clean_path = path.strip("/")
-        url = f"{self.GRAPH_API}/me/drive/root:/{clean_path}"
-        
+        url = self._build_api_url(path)
         response = requests.delete(url, headers=self.headers)
         if response.status_code == 404:
             return
@@ -91,29 +122,17 @@ class OneDriveStorageProvider(StorageProvider):
         return self._get_drive_item(path) is not None
 
     def mkdir(self, path: str) -> None:
-        # Creating folder recursively is hard with single call, assume parent exists or use simple create?
-        # Graph API 'create folder' is POST to parent's children.
-        # Simple implementation: Try to create leaf folder.
-        
-        parts = path.strip("/").split("/")
-        if not parts: return
+        parts = self._clean_path(path).split("/")
+        if not parts or parts == [""]: return
 
-        # This logic is complex for deep paths. 
-        # For this tool, let's assume one level or flat structure for output mostly.
-        # But to be safe, let's just attempt creation of the target folder in the parent.
-        
         parent_path = "/".join(parts[:-1])
         folder_name = parts[-1]
         
-        if not parent_path:
-            url = f"{self.GRAPH_API}/me/drive/root/children"
-        else:
-            url = f"{self.GRAPH_API}/me/drive/root:/{parent_path}:/children"
-
+        url = self._build_api_url(parent_path, is_children=True)
+        
         payload = {
             "name": folder_name,
             "folder": {},
-            "@microsoft.graph.conflictBehavior": "replace" # or "fail"
+            "@microsoft.graph.conflictBehavior": "replace" 
         }
-        
         requests.post(url, headers=self.headers, json=payload)
