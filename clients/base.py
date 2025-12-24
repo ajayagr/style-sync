@@ -1,10 +1,20 @@
 from abc import ABC, abstractmethod
+from typing import Optional, Union
+from pathlib import Path
+from dataclasses import dataclass
+
+@dataclass
+class ImageGenerationResult:
+    data: Optional[bytes]
+    latency: float
+    request_info: str
+    response_info: str
 
 class ImageGenerator(ABC):
     @abstractmethod
-    def process_image(self, image_path, prompt, strength):
+    def process_image(self, input_path: Path, prompt: str, strength: float) -> ImageGenerationResult:
         """
-        Process an image with the given prompt and strength.
-        Returns: Binary image data bytes or None if failed.
+        Process an image using the provider's API.
+        Returns ImageGenerationResult containing data and metrics.
         """
         pass
