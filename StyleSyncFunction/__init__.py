@@ -102,6 +102,24 @@ def process_image_with_ai(image_data: bytes, filename: str, prompt: str) -> Opti
     return None
 
 
+# ==================== DEFAULT STYLES ====================
+
+DEFAULT_STYLES = [
+    {
+        "name": "geometric_3d",
+        "prompt_text": "Transform this image into a geometric 3D abstract art piece with low poly shapes, vibrant colors, and modern design aesthetics"
+    },
+    {
+        "name": "anime",
+        "prompt_text": "Convert this image into high-quality anime style art with cel shading, vibrant colors, expressive features, and Japanese animation aesthetics"
+    },
+    {
+        "name": "vintage",
+        "prompt_text": "Transform this into a vintage retro photograph with film grain, sepia tones, slightly faded colors, and nostalgic 1970s aesthetic"
+    }
+]
+
+
 # ==================== MAIN FUNCTION ====================
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
@@ -113,9 +131,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         "source_folder": "originals/",
         "output_folder": "styled/",
         "container": "file-container",
-        "styles": [
-            {"name": "geometric_3d", "prompt_text": "Turn into geometric 3D art"}
-        ]
+        "styles": [...]  // Optional - uses defaults if not provided
     }
     """
     logging.info("StyleSync function triggered")
@@ -134,14 +150,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     container = body.get("container", os.environ.get("CONTAINER_NAME", "file-container"))
     source_folder = body.get("source_folder", "")
     output_folder = body.get("output_folder", "styled/")
-    styles = body.get("styles", [])
-    
-    if not styles:
-        return func.HttpResponse(
-            json.dumps({"error": "No styles provided"}),
-            status_code=400,
-            mimetype="application/json"
-        )
+    styles = body.get("styles", DEFAULT_STYLES)
     
     # Initialize storage
     conn_str = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
