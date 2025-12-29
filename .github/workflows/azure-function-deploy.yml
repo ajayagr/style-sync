@@ -1,4 +1,5 @@
 name: Deploy StyleSync Azure Function
+# Deployment triggered: 2025-12-29
 
 on:
   push:
