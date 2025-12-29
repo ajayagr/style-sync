@@ -2,11 +2,22 @@ import azure.functions as func
 import logging
 import json
 import os
-import requests
-from azure.storage.blob import BlobServiceClient
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('StyleSync function processed a request.')
+
+    try:
+        import requests
+        from azure.storage.blob import BlobServiceClient
+    except ImportError as e:
+        return func.HttpResponse(
+            json.dumps({"error": f"Dependency missing: {e}"}),
+            status_code=500,
+            mimetype="application/json"
+        )
+
+    if req.method == "GET":
+        return func.HttpResponse(json.dumps({"status": "healthy", "version": "1.0.1"}), status_code=200, mimetype="application/json")
 
     # 1. Input Parsing
     try:

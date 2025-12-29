@@ -1,0 +1,6 @@
+{
+    "source_folder": "originals/",
+    "output_folder": "styled/",
+    "container": "file-container",
+    "styles": []
+}
