@@ -154,7 +154,7 @@ def main():
             
         # Step C: Generate Missing
         tasks = get_missing_files(output_provider, expected_state, output_path)
-        context.missing_variants = [t['output_filename'] for t in tasks]
+        context.missing_variants = [t.get('output_path', '') for t in tasks]
         print(f"Tasks to process: {len(tasks)}")
         
         if not tasks:
@@ -165,15 +165,31 @@ def main():
             print("\nProcessing images...")
             success_count = 0
             fail_count = 0
+            copy_count = 0
             
             with tqdm(total=len(tasks)) as pbar:
                 for task in tasks:
                     step_start = time.time()
                     source_item = task['source_item']
-                    style = task['style']
-                    output_filename = task['output_filename']
+                    is_original = task.get('is_original', False)
+                    target_full_path = task.get('full_target_path')
+                    output_rel_path = task.get('output_path', '')
                     
-                    # Full paths for logging/display, though providers use specific logic
+                    if is_original:
+                        # Direct copy for original folder
+                        pbar.set_description(f"Copying {source_item.name}")
+                        try:
+                            input_data = source_provider.read_file(source_item.path)
+                            output_provider.write_file(target_full_path, input_data)
+                            copy_count += 1
+                        except Exception as e:
+                            logger.error(f"Error copying {source_item.name}: {e}")
+                            fail_count += 1
+                        pbar.update(1)
+                        continue
+                    
+                    # Styled variant processing
+                    style = task['style']
                     display_name = source_item.name
                     step_name = f"{display_name} -> {style['name']}"
                     
@@ -188,8 +204,6 @@ def main():
                         tmp_fd, tmp_path_str = tempfile.mkstemp(suffix=Path(source_item.name).suffix)
                         os.close(tmp_fd)
                         tmp_path = Path(tmp_path_str)
-                        
-                        # Add step log early if read fails? No, lets wrap generation.
                         
                         try:
                             # Write data to temp
@@ -206,7 +220,7 @@ def main():
                             # Log the step
                             context.add_step(
                                 name=step_name,
-                                start_time=step_start, # Approximate
+                                start_time=step_start,
                                 details=f"Request:\n{result.request_info}\n\nResponse:\n{result.response_info}",
                                 error=None if result.data else "API returned no data"
                             )
@@ -217,22 +231,21 @@ def main():
                         
                         if result and result.data:
                             # WRITE Output
-                            target_full_path = f"{output_path.rstrip('/')}/{output_filename}"
                             output_provider.write_file(target_full_path, result.data)
                             success_count += 1
                         else:
-                            logger.warning(f"Failed to generate {output_filename}")
+                            logger.warning(f"Failed to generate {output_rel_path}")
                             fail_count += 1
                             
                     except Exception as e:
-                        logger.error(f"Error processing {output_filename}: {e}")
+                        logger.error(f"Error processing {output_rel_path}: {e}")
                         context.add_step(name=step_name, start_time=step_start, details="Exception occurred", error=str(e))
                         fail_count += 1
                         
                     pbar.update(1)
                     
-            logger.info(f"Completed. Success: {success_count}, Failed: {fail_count}")
-            print(f"\nCompleted. Success: {success_count}, Failed: {fail_count}")
+            logger.info(f"Completed. Copied: {copy_count}, Styled: {success_count}, Failed: {fail_count}")
+            print(f"\nCompleted. Copied: {copy_count}, Styled: {success_count}, Failed: {fail_count}")
 
     except Exception as e:
         logger.error(f"Critical Error: {e}")

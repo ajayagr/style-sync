@@ -4,6 +4,7 @@ name: Deploy StyleSync Azure Function
 on:
   push:
     branches:
+      - main
       - azure-function
   workflow_dispatch:
 
