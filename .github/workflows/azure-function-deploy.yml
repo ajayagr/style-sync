@@ -18,10 +18,15 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
+        node-version: 20
+
+    - name: Install Dependencies
+      run: |
+        npm install
+        npm run start --if-present
 
     - name: Login to Azure
       uses: azure/login@v2
@@ -33,5 +38,3 @@ jobs:
       with:
         app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
         package: '.'
-        scm-do-build-during-deployment: true
-        enable-oryx-build: true

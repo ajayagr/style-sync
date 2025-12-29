@@ -1,0 +1,1 @@
+{"error": "Dependency missing: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.33' not found (required by /home/site/wwwroot/.python_packages/lib/site-packages/cryptography/hazmat/bindings/_rust.abi3.so)"}
