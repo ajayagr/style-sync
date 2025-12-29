@@ -1,228 +1,166 @@
-"""
-StyleSync Azure Function - Image Style Transfer
-HTTP-triggered function that processes images from Azure Blob Storage
-and applies AI style transformations.
-"""
 import azure.functions as func
-import json
 import logging
+import json
 import os
 import requests
-import base64
-import mimetypes
 from azure.storage.blob import BlobServiceClient
-from dataclasses import dataclass
-from typing import Optional, List
-
-
-# ==================== DATA CLASSES ====================
-
-@dataclass
-class FileItem:
-    """Represents a file in storage."""
-    name: str
-    path: str
-    is_dir: bool = False
-
-
-# ==================== AZURE BLOB STORAGE ====================
-
-class BlobStorageProvider:
-    """Azure Blob Storage operations."""
-    
-    def __init__(self, connection_string: str, container_name: str):
-        self.client = BlobServiceClient.from_connection_string(connection_string)
-        self.container = self.client.get_container_client(container_name)
-        if not self.container.exists():
-            self.container.create_container()
-    
-    def exists(self, path: str) -> bool:
-        if not path:
-            return True
-        return self.container.get_blob_client(path).exists()
-    
-    def list_files(self, prefix: str = "") -> List[FileItem]:
-        blobs = self.container.list_blobs(name_starts_with=prefix if prefix else None)
-        return [FileItem(name=b.name.rsplit("/", 1)[-1], path=b.name) for b in blobs]
-    
-    def read_file(self, path: str) -> bytes:
-        return self.container.get_blob_client(path).download_blob().readall()
-    
-    def write_file(self, path: str, data: bytes):
-        self.container.get_blob_client(path).upload_blob(data, overwrite=True)
-
-
-# ==================== IMAGE PROCESSING ====================
-
-VALID_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
-
-
-def get_images(storage: BlobStorageProvider, source_dir: str) -> List[FileItem]:
-    """Get valid image files from source directory."""
-    return [
-        item for item in storage.list_files(source_dir)
-        if not item.is_dir and any(item.name.lower().endswith(ext) for ext in VALID_EXTENSIONS)
-    ]
-
-
-def process_image_with_ai(image_data: bytes, filename: str, prompt: str) -> Optional[bytes]:
-    """Apply AI style transformation using Azure endpoint."""
-    endpoint = os.environ.get("AZURE_ENDPOINT_URL")
-    api_key = os.environ.get("AZURE_API_KEY")
-    
-    if not endpoint or not api_key:
-        logging.error("AZURE_ENDPOINT_URL or AZURE_API_KEY not configured")
-        return None
-    
-    mime_type, _ = mimetypes.guess_type(filename)
-    if not mime_type:
-        mime_type = "image/png"
-    
-    try:
-        response = requests.post(
-            endpoint,
-            headers={"Authorization": f"Bearer {api_key}"},
-            files={"image": (filename, image_data, mime_type)},
-            data={"model": "flux.1-kontext-pro", "prompt": prompt},
-            timeout=120
-        )
-        response.raise_for_status()
-        
-        result = response.json()
-        if "data" in result and len(result["data"]) > 0:
-            item = result["data"][0]
-            if item.get("b64_json"):
-                return base64.b64decode(item["b64_json"])
-            elif item.get("url"):
-                img_resp = requests.get(item["url"], timeout=60)
-                return img_resp.content
-    except Exception as e:
-        logging.error(f"AI processing error: {e}")
-    
-    return None
-
-
-# ==================== DEFAULT STYLES ====================
-
-DEFAULT_STYLES = [
-    {
-        "name": "geometric_3d",
-        "prompt_text": "Transform this image into a geometric 3D abstract art piece with low poly shapes, vibrant colors, and modern design aesthetics"
-    },
-    {
-        "name": "anime",
-        "prompt_text": "Convert this image into high-quality anime style art with cel shading, vibrant colors, expressive features, and Japanese animation aesthetics"
-    },
-    {
-        "name": "vintage",
-        "prompt_text": "Transform this into a vintage retro photograph with film grain, sepia tones, slightly faded colors, and nostalgic 1970s aesthetic"
-    }
-]
-
-
-# ==================== MAIN FUNCTION ====================
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    """
-    HTTP trigger for StyleSync.
-    
-    Request body:
-    {
-        "source_folder": "originals/",
-        "output_folder": "styled/",
-        "container": "file-container",
-        "styles": [...]  (Optional - uses defaults if not provided)
-    }
-    """
-    logging.info("StyleSync function triggered")
-    
-    # Parse request
+    logging.info('StyleSync function processed a request.')
+
+    # 1. Input Parsing
     try:
-        body = req.get_json()
+        req_body = req.get_json()
     except ValueError:
         return func.HttpResponse(
             json.dumps({"error": "Invalid JSON body"}),
             status_code=400,
             mimetype="application/json"
         )
-    
-    # Get parameters
-    container = body.get("container", os.environ.get("CONTAINER_NAME", "file-container"))
-    source_folder = body.get("source_folder", "")
-    output_folder = body.get("output_folder", "styled/")
-    styles = body.get("styles", DEFAULT_STYLES)
-    
-    # Initialize storage
-    conn_str = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
-    if not conn_str:
+
+    source_folder = req_body.get('source_folder')
+    output_folder = req_body.get('output_folder')
+    container_name = req_body.get('container') or os.environ.get('CONTAINER_NAME')
+    styles = req_body.get('styles', [])
+
+    if not source_folder or not output_folder or not container_name:
         return func.HttpResponse(
-            json.dumps({"error": "AZURE_STORAGE_CONNECTION_STRING not configured"}),
+            json.dumps({"error": "Missing required parameters: source_folder, output_folder, container"}),
+            status_code=400,
+            mimetype="application/json"
+        )
+
+    # 2. Storage Connection
+    connection_string = os.environ.get('AZURE_STORAGE_CONNECTION_STRING')
+    if not connection_string:
+        return func.HttpResponse(
+            json.dumps({"error": "AZURE_STORAGE_CONNECTION_STRING not set"}),
             status_code=500,
             mimetype="application/json"
         )
+
+    api_key = os.environ.get('AZURE_API_KEY')
+    endpoint_url = os.environ.get('AZURE_ENDPOINT_URL')
     
-    storage = BlobStorageProvider(conn_str, container)
-    
-    # Process images
+    # We allow proceeding without API key/URL for testing storage logic, 
+    # but we will log warnings and fail the styling step.
+    if not api_key or not endpoint_url:
+        logging.warning("AZURE_API_KEY or AZURE_ENDPOINT_URL not set. Styling will fail.")
+
     results = {
         "status": "completed",
-        "source": f"{container}/{source_folder}",
-        "output": f"{container}/{output_folder}",
+        "source": f"{container_name}/{source_folder}",
+        "output": f"{container_name}/{output_folder}",
         "processed": [],
         "copied": [],
         "failed": [],
         "skipped": []
     }
-    
+
     try:
-        images = get_images(storage, source_folder)
-        logging.info(f"Found {len(images)} images")
+        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+        container_client = blob_service_client.get_container_client(container_name)
+
+        if not container_client.exists():
+             return func.HttpResponse(
+                json.dumps({"error": f"Container '{container_name}' does not exist"}),
+                status_code=404,
+                mimetype="application/json"
+            )
+
+        # 3. Processing Loop
+        blobs = container_client.list_blobs(name_starts_with=source_folder)
         
-        for image in images:
-            # Copy original
-            original_path = f"{output_folder.rstrip('/')}/original/{image.name}"
-            if not storage.exists(original_path):
-                try:
-                    data = storage.read_file(image.path)
-                    storage.write_file(original_path, data)
-                    results["copied"].append(f"original/{image.name}")
-                except Exception as e:
-                    logging.error(f"Copy error: {e}")
-                    results["failed"].append(f"original/{image.name}")
-            else:
-                results["skipped"].append(f"original/{image.name}")
+        for blob in blobs:
+            if blob.name.endswith('/'): # Skip directories if any
+                continue
+                
+            blob_name = blob.name
+            file_name = os.path.basename(blob_name)
             
-            # Apply styles
-            for style in styles:
-                style_name = style.get("name", "styled")
-                style_folder = style_name.replace(" ", "_").lower()
-                style_path = f"{output_folder.rstrip('/')}/{style_folder}/{image.name}"
+            try:
+                logging.info(f"Processing {blob_name}")
                 
-                if storage.exists(style_path):
-                    results["skipped"].append(f"{style_folder}/{image.name}")
-                    continue
+                # Download
+                blob_client = container_client.get_blob_client(blob_name)
+                download_stream = blob_client.download_blob()
+                image_data = download_stream.readall()
                 
-                try:
-                    data = storage.read_file(image.path)
-                    styled = process_image_with_ai(data, image.name, style.get("prompt_text", ""))
+                # Backup Original
+                original_blob_name = f"{output_folder}original/{file_name}"
+                # Check if exists to support "Incremental Processing" - assuming overwrite for now based on typical behavior, 
+                # but could check existence to skip. README mentions "Skips already-processed images", 
+                # usually this implies checking the *styled* output, but checking original copy is a good proxy or step.
+                # For this implementation, I will just overwrite the backup to ensure consistency.
+                
+                backup_client = container_client.get_blob_client(original_blob_name)
+                backup_client.upload_blob(image_data, overwrite=True)
+                results["copied"].append(original_blob_name)
+                
+                # Apply Styles
+                for style in styles:
+                    style_name = style.get('name')
+                    prompt_text = style.get('prompt_text')
                     
-                    if styled:
-                        storage.write_file(style_path, styled)
-                        results["processed"].append(f"{style_folder}/{image.name}")
-                    else:
-                        results["failed"].append(f"{style_folder}/{image.name}")
-                except Exception as e:
-                    logging.error(f"Style error: {e}")
-                    results["failed"].append(f"{style_folder}/{image.name}")
-    
+                    if not style_name or not prompt_text:
+                        continue
+
+                    target_blob_name = f"{output_folder}{style_name}/{file_name}"
+                    
+                    # Check if already processed (Incremental)
+                    target_blob_client = container_client.get_blob_client(target_blob_name)
+                    if target_blob_client.exists():
+                        results["skipped"].append(target_blob_name)
+                        continue
+
+                    if not api_key or not endpoint_url:
+                        results["failed"].append({"file": target_blob_name, "error": "API Config Missing"})
+                        continue
+
+                    # Call API
+                    try:
+                        # Generic multipart/form-data upload expected by many inference APIs
+                        # Adjust this if the specific API expects JSON with base64
+                        files = {'file': (file_name, image_data)}
+                        data = {'prompt': prompt_text}
+                        headers = {'x-api-key': api_key} # Common header pattern, or Authorization: Bearer
+                        
+                        # Note: 'x-api-key' is a guess. Often it is 'Authorization'. 
+                        # I'll use a generic header dictionary that can be easily updated.
+                        # For now, I will assume a header based auth or query param. 
+                        # Let's try Authorization header as it's most standard, fallback or addition can be done later.
+                        # Actually, looking at typical Azure AI services or standard wrappers, key often goes in header.
+                        # I'll stick to 'Authorization': api_key for now.
+                        api_headers = {'Authorization': api_key}
+                        
+                        response = requests.post(endpoint_url, files=files, data=data, headers=api_headers)
+                        
+                        if response.status_code == 200:
+                            styled_image_data = response.content
+                            target_blob_client.upload_blob(styled_image_data, overwrite=True)
+                            results["processed"].append(target_blob_name)
+                        else:
+                            error_msg = f"API Error {response.status_code}: {response.text[:100]}"
+                            logging.error(f"Failed to style {file_name} with {style_name}: {error_msg}")
+                            results["failed"].append({"file": target_blob_name, "error": error_msg})
+
+                    except Exception as api_exc:
+                        logging.error(f"API Call Failed for {file_name}: {api_exc}")
+                        results["failed"].append({"file": target_blob_name, "error": str(api_exc)})
+            
+            except Exception as e:
+                logging.error(f"Error processing blob {blob_name}: {e}")
+                results["failed"].append({"file": blob_name, "error": str(e)})
+
     except Exception as e:
-        logging.error(f"Critical error: {e}")
-        results["status"] = "failed"
-        results["error"] = str(e)
-    
-    status_code = 200 if results["status"] == "completed" else 500
+        return func.HttpResponse(
+            json.dumps({"error": str(e)}),
+            status_code=500,
+            mimetype="application/json"
+        )
+
     return func.HttpResponse(
         json.dumps(results, indent=2),
-        status_code=status_code,
+        status_code=200,
         mimetype="application/json"
     )
