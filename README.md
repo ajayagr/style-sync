@@ -1,43 +1,50 @@
 # StyleSync
 
-StyleSync is a Python CLI application that synchronizes image folders by applying AI-generated style transformations. It processes images from a source directory (Local or OneDrive) and generates styled variants in an output directory using Azure Foundry (FLUX.1-Kontext-pro) or Stability AI.
+StyleSync is a Python application that synchronizes image folders by applying AI-generated style transformations. It supports both **CLI** (local/OneDrive) and **serverless Azure Function** deployments.
 
 ## Features
 
-- **Multi-Style Synchronization**: Automatically generates multiple styled versions of each source image based on configuration.
-- **Incremental Updates**: Only processes new or modified images; skips existing valid outputs.
+- **Multi-Style Synchronization**: Generate multiple styled versions of each source image.
+- **Incremental Updates**: Only processes new/missing images; skips existing outputs.
+- **Organized Output**: Outputs stored in style-based subfolders with original copies.
 - **Provider Support**:
   - **Azure Foundry**: FLUX.1-Kontext-pro model.
   - **Stability AI**: Stable Diffusion XL model.
 - **Storage Support**:
-  - **Local**: Standard file system paths.
-  - **OneDrive**: Remote folder syncing (requires authentication).
-- **Cleanup**: Automatically removes orphaned files that no longer match the current configuration.
-- **Reporting**: Generates a detailed Markdown report after each run.
+  - **Local**: Standard file system paths (CLI).
+  - **OneDrive**: Remote folder syncing (CLI).
+  - **Azure Blob Storage**: For serverless function.
+- **Cleanup**: Automatically removes orphaned files.
+- **Reporting**: Generates detailed Markdown reports (CLI).
+
+## Output Folder Structure
+
+```
+target/
+├── original/         # Unmodified source copies
+├── geometric_3d/     # Style variant 1
+├── watercolor/       # Style variant 2
+└── ...
+```
 
 ## Prerequisites
 
-- Python 3.8+
+- Python 3.9+
 - Active internet connection for API access.
 
 ## Installation
 
-1. Clone the repository:
-   ```bash
-   git clone <repository-url>
-   cd stylesync
-   ```
-
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-   *(Note: if requirements.txt is mapped, otherwise install: `pip install tqdm python-dotenv requests`)*
+```bash
+git clone https://github.com/ajayagr/style-sync.git
+cd style-sync
+pip install -r requirements.txt
+```
 
 ## Configuration
 
 ### Environment Variables
-Create a `.env` file in the root directory:
+
+Create a `.env` file:
 
 ```ini
 # Azure Foundry (FLUX.1-Kontext-pro)
@@ -47,13 +54,14 @@ AZURE_API_KEY=<your-api-key>
 # Stability AI (Alternative)
 STABILITY_API_KEY=<your-api-key>
 
-# OneDrive (If using OneDrive storage)
-ONEDRIVE_ACCESS_TOKEN=<your-access-token>
-# Optional: ONEDRIVE_CLIENT_ID=<client-id>
+# Azure Blob Storage (for Azure Function)
+AZURE_STORAGE_CONNECTION_STRING=<your-connection-string>
+CONTAINER_NAME=file-container
 ```
 
 ### Style Configuration
-Edit `config.yaml` to define your styles and provider:
+
+Edit `config.yaml`:
 
 ```yaml
 provider: azure # Options: azure, stability
@@ -61,36 +69,64 @@ provider: azure # Options: azure, stability
 styles:
   - index: "01"
     name: "geometric_3d"
-    prompt_text: "Turn this into a geometric 3d abstract art piece, low poly, vibrant colors"
+    prompt_text: "Turn this into a geometric 3d abstract art piece"
     strength: 0.6
 
   - index: "02"
-    name: "anime"
-    prompt_text: "Transform this image into anime style, cel shaded"
+    name: "watercolor"
+    prompt_text: "Transform into a watercolor painting"
     strength: 0.5
 ```
 
 ## Usage
 
-### Interactive Mode
-Run without arguments to start the interactive wizard for selecting Local/OneDrive paths.
+### CLI - Interactive Mode
+
 ```bash
 python main.py
 ```
 
-### CLI Mode (Local Only)
-Specify source, output, and config paths directly.
+### CLI - Direct Mode
+
 ```bash
-python main.py --source "./input_images" --output "./output_images" --config "config.yaml"
+python main.py --source "./images" --output "./styled" --config "config.yaml"
 ```
 
-## Directory Structure
+### Azure Function (Serverless)
 
-- `main.py`: Entry point.
-- `stylesync/`: Core logic package.
-- `clients/`: AI provider implementations.
-- `config.yaml`: Configuration file.
-- `report/`: Generated execution reports.
+**Endpoint:** `POST https://stylesync-function.azurewebsites.net/api/stylesync`
+
+**Request Body:**
+```json
+{
+  "source_folder": "originals/",
+  "output_folder": "styled/",
+  "container": "file-container",
+  "provider": "azure",
+  "styles": [
+    {"index": "01", "name": "geometric_3d", "prompt_text": "...", "strength": 0.6}
+  ]
+}
+```
+
+## Project Structure
+
+```
+stylesync/
+├── main.py              # CLI entry point
+├── function_app.py      # Azure Function handler
+├── sync.py              # Sync logic
+├── clients/             # AI provider implementations
+├── storage/             # Storage providers (Local, OneDrive, Blob)
+├── config.yaml          # Style configuration
+├── .github/workflows/   # CI/CD pipeline
+└── report/              # Generated execution reports (CLI)
+```
+
+## Deployment
+
+The Azure Function auto-deploys via GitHub Actions on push to `main` or `azure-function` branches.
 
 ## License
+
 MIT
