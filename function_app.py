@@ -51,7 +51,7 @@ class AzureBlobProvider:
 app = func.FunctionApp()
 
 @app.function_name(name="stylesync")
-@app.route(route="stylesync", auth_level=func.AuthLevel.FUNCTION, methods=["POST"])
+@app.route(route="stylesync", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
 def main(req: func.HttpRequest) -> func.HttpResponse:
     """
     HTTP Trigger handler for StyleSync.
