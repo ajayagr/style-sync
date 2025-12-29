@@ -140,35 +140,40 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         
         for task in tasks:
             source_item = task['source_item']
-            style = task['style']
-            output_filename = task['output_filename']
+            is_original = task.get('is_original', False)
+            target_path = task.get('full_target_path')
+            output_path = task.get('output_path', '')
             
             try:
                 # Read Source
                 input_data = storage.read_file(source_item.path)
                 
-                # Generate Styled Image
-                result = generator.process_image_bytes(
-                    input_data,
-                    source_item.name,
-                    style['prompt_text'],
-                    style['strength']
-                )
-                
-                if result and result.data:
-                    # Write to Output
-                    target_path = f"{output_folder.rstrip('/')}/{output_filename}"
-                    storage.write_file(target_path, result.data)
-                    results["processed"].append(output_filename)
+                if is_original:
+                    # Direct copy for original folder
+                    storage.write_file(target_path, input_data)
+                    results["processed"].append(f"original/{source_item.name}")
                 else:
-                    results["failed"].append(output_filename)
+                    # Generate Styled Image
+                    style = task['style']
+                    result = generator.process_image_bytes(
+                        input_data,
+                        source_item.name,
+                        style['prompt_text'],
+                        style['strength']
+                    )
+                    
+                    if result and result.data:
+                        storage.write_file(target_path, result.data)
+                        results["processed"].append(output_path)
+                    else:
+                        results["failed"].append(output_path)
                     
             except Exception as e:
-                logger.error(f"Error processing {output_filename}: {e}")
-                results["failed"].append(output_filename)
+                logger.error(f"Error processing {output_path}: {e}")
+                results["failed"].append(output_path)
         
         # Skipped = already existed
-        results["skipped"] = [k for k in expected.keys() if k not in [t['output_filename'] for t in tasks]]
+        results["skipped"] = [k for k in expected.keys() if k not in [t.get('output_path', '') for t in tasks]]
         
     except Exception as e:
         logger.error(f"Critical error: {e}")
