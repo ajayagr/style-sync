@@ -1,22 +1,39 @@
 """
 StyleSync Azure Function
 HTTP-Triggered function to process images with AI style transfer.
-Pulls from source folder in File Bucket storage, outputs to target folder.
+Fully self-contained to avoid import issues.
 """
 import azure.functions as func
 import json
 import logging
 import os
+import requests
+import base64
+import mimetypes
+import time
 from azure.storage.blob import BlobServiceClient
+from dataclasses import dataclass
+from typing import Optional, List
 
-# Import StyleSync core logic
-from sync import map_expected_state, get_missing_files
-from clients import get_generator
-from config import load_config
-
+app = func.FunctionApp()
 logger = logging.getLogger(__name__)
 
-# Azure Blob Storage Provider (inline for simplicity)
+# ============ DATA CLASSES ============
+
+@dataclass
+class FileItem:
+    name: str
+    path: str
+    is_dir: bool = False
+
+@dataclass
+class GeneratorResult:
+    data: Optional[bytes]
+    request_info: str = ""
+    response_info: str = ""
+
+# ============ STORAGE PROVIDER ============
+
 class AzureBlobProvider:
     def __init__(self, connection_string: str, container_name: str):
         self.blob_service = BlobServiceClient.from_connection_string(connection_string)
@@ -25,17 +42,12 @@ class AzureBlobProvider:
             self.container.create_container()
     
     def exists(self, path: str) -> bool:
+        if not path:
+            return True  # Root always exists
         return self.container.get_blob_client(path).exists()
     
-    def list_files(self, prefix: str = ""):
-        from dataclasses import dataclass
-        @dataclass
-        class FileItem:
-            name: str
-            path: str
-            is_dir: bool = False
-        
-        blobs = self.container.list_blobs(name_starts_with=prefix)
+    def list_files(self, prefix: str = "") -> List[FileItem]:
+        blobs = self.container.list_blobs(name_starts_with=prefix if prefix else None)
         return [FileItem(name=b.name.rsplit("/", 1)[-1], path=b.name) for b in blobs]
     
     def read_file(self, path: str) -> bytes:
@@ -43,97 +55,119 @@ class AzureBlobProvider:
     
     def write_file(self, path: str, data: bytes):
         self.container.get_blob_client(path).upload_blob(data, overwrite=True)
+
+# ============ SYNC LOGIC ============
+
+def get_valid_images(provider: AzureBlobProvider, source_dir: str):
+    valid_extensions = {'.jpg', '.jpeg', '.png', '.webp'}
+    for item in provider.list_files(source_dir):
+        if not item.is_dir and any(item.name.lower().endswith(ext) for ext in valid_extensions):
+            yield item
+
+def map_expected_state(provider: AzureBlobProvider, source_dir: str, styles: list):
+    expected_state = {}
+    valid_images = list(get_valid_images(provider, source_dir))
     
-    def mkdir(self, path: str):
-        pass  # No-op for blob storage
+    for item in valid_images:
+        # Original copy
+        original_key = f"original/{item.name}"
+        expected_state[original_key] = {
+            'source_item': item,
+            'style': None,
+            'output_path': original_key,
+            'is_original': True
+        }
+        
+        # Styled variants
+        for style in styles:
+            style_name = style.get('name', f"style_{style['index']}")
+            style_folder = style_name.replace(' ', '_').lower()
+            style_key = f"{style_folder}/{item.name}"
+            expected_state[style_key] = {
+                'source_item': item,
+                'style': style,
+                'output_path': style_key,
+                'is_original': False
+            }
+    
+    return expected_state
 
+def get_missing_files(provider: AzureBlobProvider, expected_state: dict, output_dir: str):
+    missing = []
+    for rel_path, details in expected_state.items():
+        target = f"{output_dir.rstrip('/')}/{rel_path}"
+        if not provider.exists(target):
+            details_copy = details.copy()
+            details_copy['full_target_path'] = target
+            missing.append(details_copy)
+    return missing
 
-app = func.FunctionApp()
+# ============ AI GENERATOR ============
+
+def process_image_azure(image_data: bytes, filename: str, prompt: str, strength: float) -> GeneratorResult:
+    endpoint = os.environ.get("AZURE_ENDPOINT_URL")
+    api_key = os.environ.get("AZURE_API_KEY")
+    
+    if not endpoint or not api_key:
+        return GeneratorResult(None, "Missing config", "AZURE_ENDPOINT_URL or AZURE_API_KEY not set")
+    
+    headers = {"Authorization": f"Bearer {api_key}"}
+    mime_type, _ = mimetypes.guess_type(filename)
+    if not mime_type:
+        mime_type = "image/png"
+    
+    try:
+        files = {"image": (filename, image_data, mime_type)}
+        data = {"model": "flux.1-kontext-pro", "prompt": prompt}
+        
+        response = requests.post(endpoint, headers=headers, files=files, data=data, timeout=120)
+        response.raise_for_status()
+        
+        result = response.json()
+        if "data" in result and len(result["data"]) > 0:
+            item = result["data"][0]
+            if item.get("b64_json"):
+                return GeneratorResult(base64.b64decode(item["b64_json"]))
+            elif item.get("url"):
+                img_resp = requests.get(item['url'])
+                return GeneratorResult(img_resp.content)
+        
+        return GeneratorResult(None, "API call", "No data in response")
+    except Exception as e:
+        return GeneratorResult(None, "API call", str(e))
+
+# ============ FUNCTION ENTRY POINT ============
 
 @app.function_name(name="stylesync")
 @app.route(route="stylesync", auth_level=func.AuthLevel.ANONYMOUS, methods=["POST"])
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    """
-    HTTP Trigger handler for StyleSync.
-    
-    Expected JSON body:
-    {
-        "source_folder": "originals/",
-        "output_folder": "styled/",
-        "container": "file-container",
-        "provider": "azure",
-        "styles": [{"index": 1, "name": "Watercolor", "prompt_text": "...", "strength": 0.7}]
-    }
-    """
     logger.info("StyleSync function triggered.")
     
     try:
         req_body = req.get_json()
     except ValueError:
-        return func.HttpResponse(
-            json.dumps({"error": "Invalid JSON body"}),
-            status_code=400,
-            mimetype="application/json"
-        )
+        return func.HttpResponse(json.dumps({"error": "Invalid JSON"}), status_code=400, mimetype="application/json")
     
-    # Extract parameters
+    # Parameters
     container = req_body.get("container", os.environ.get("CONTAINER_NAME", "file-container"))
-    source_folder = req_body.get("source_folder", "originals/")
+    source_folder = req_body.get("source_folder", "")
     output_folder = req_body.get("output_folder", "styled/")
     styles = req_body.get("styles", [])
-    provider_name = req_body.get("provider", "azure")
-    
-    # Load default styles from config if not provided
-    if not styles:
-        try:
-            config = load_config("config.yaml")
-            styles = config.get("styles", [])
-        except Exception as e:
-            logger.warning(f"Could not load config.yaml: {e}")
     
     if not styles:
-        return func.HttpResponse(
-            json.dumps({"error": "No styles provided and config.yaml not found"}),
-            status_code=400,
-            mimetype="application/json"
-        )
+        return func.HttpResponse(json.dumps({"error": "No styles provided"}), status_code=400, mimetype="application/json")
     
-    # Initialize Storage
-    connection_string = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
-    if not connection_string:
-        return func.HttpResponse(
-            json.dumps({"error": "AZURE_STORAGE_CONNECTION_STRING not configured"}),
-            status_code=500,
-            mimetype="application/json"
-        )
+    # Storage
+    conn_str = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+    if not conn_str:
+        return func.HttpResponse(json.dumps({"error": "Storage not configured"}), status_code=500, mimetype="application/json")
     
-    storage = AzureBlobProvider(connection_string, container)
+    storage = AzureBlobProvider(conn_str, container)
     
-    # Initialize Generator
-    try:
-        generator = get_generator(provider_name)
-    except ValueError as e:
-        return func.HttpResponse(
-            json.dumps({"error": f"Generator error: {e}"}),
-            status_code=500,
-            mimetype="application/json"
-        )
-    
-    # Results
-    results = {
-        "status": "completed",
-        "source": f"{container}/{source_folder}",
-        "output": f"{container}/{output_folder}",
-        "processed": [],
-        "failed": [],
-        "skipped": []
-    }
+    results = {"status": "completed", "processed": [], "failed": [], "skipped": []}
     
     try:
-        # Map Expected State
         expected = map_expected_state(storage, source_folder, styles)
-        
-        # Get Missing Files
         tasks = get_missing_files(storage, expected, output_folder)
         
         logger.info(f"Expected: {len(expected)}, Tasks: {len(tasks)}")
@@ -145,43 +179,29 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             output_path = task.get('output_path', '')
             
             try:
-                # Read Source
                 input_data = storage.read_file(source_item.path)
                 
                 if is_original:
-                    # Direct copy for original folder
                     storage.write_file(target_path, input_data)
                     results["processed"].append(f"original/{source_item.name}")
                 else:
-                    # Generate Styled Image
                     style = task['style']
-                    result = generator.process_image_bytes(
-                        input_data,
-                        source_item.name,
-                        style['prompt_text'],
-                        style['strength']
-                    )
+                    result = process_image_azure(input_data, source_item.name, style['prompt_text'], style['strength'])
                     
                     if result and result.data:
                         storage.write_file(target_path, result.data)
                         results["processed"].append(output_path)
                     else:
                         results["failed"].append(output_path)
-                    
             except Exception as e:
-                logger.error(f"Error processing {output_path}: {e}")
+                logger.error(f"Error: {output_path} - {e}")
                 results["failed"].append(output_path)
         
-        # Skipped = already existed
         results["skipped"] = [k for k in expected.keys() if k not in [t.get('output_path', '') for t in tasks]]
         
     except Exception as e:
-        logger.error(f"Critical error: {e}")
+        logger.error(f"Critical: {e}")
         results["status"] = "failed"
         results["error"] = str(e)
     
-    return func.HttpResponse(
-        json.dumps(results, indent=2),
-        status_code=200 if results["status"] == "completed" else 500,
-        mimetype="application/json"
-    )
+    return func.HttpResponse(json.dumps(results, indent=2), status_code=200 if results["status"] == "completed" else 500, mimetype="application/json")
