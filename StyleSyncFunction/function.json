@@ -1,12 +1,13 @@
 {
-    "scriptFile": "function_app.py",
+    "scriptFile": "__init__.py",
     "bindings": [
         {
-            "authLevel": "function",
+            "authLevel": "anonymous",
             "type": "httpTrigger",
             "direction": "in",
             "name": "req",
-            "methods": ["post"]
+            "methods": ["post"],
+            "route": "stylesync"
         },
         {
             "type": "http",

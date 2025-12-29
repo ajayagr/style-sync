@@ -1,10 +1,9 @@
+# Ignore
 __pycache__/
 *.pyc
 .env
-.DS_Store
-**/*.log
+local.settings.json
 .vscode/
 .idea/
-report/
-local.settings.json
+*.log
 .python_packages/

@@ -1,9 +1,3 @@
-# Core
-requests>=2.28.0
-python-dotenv>=0.21.0
-pyyaml>=6.0
-tqdm>=4.64.0
-
-# Azure (for serverless and blob storage)
 azure-functions
 azure-storage-blob
+requests

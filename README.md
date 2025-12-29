@@ -1,111 +1,78 @@
-# StyleSync
+# StyleSync Serverless
 
-StyleSync is a Python application that synchronizes image folders by applying AI-generated style transformations. It supports both **CLI** (local/OneDrive) and **serverless Azure Function** deployments.
+A serverless Azure Function that applies AI style transformations to images stored in Azure Blob Storage.
 
 ## Features
 
-- **Multi-Style Synchronization**: Generate multiple styled versions of each source image.
-- **Incremental Updates**: Only processes new/missing images; skips existing outputs.
-- **Organized Output**: Outputs stored in style-based subfolders with original copies.
-- **Provider Support**:
-  - **Azure Foundry**: FLUX.1-Kontext-pro model.
-  - **Stability AI**: Stable Diffusion XL model.
-- **Storage Support**:
-  - **Local**: Standard file system paths (CLI).
-  - **OneDrive**: Remote folder syncing (CLI).
-  - **Azure Blob Storage**: For serverless function.
-- **Cleanup**: Automatically removes orphaned files.
-- **Reporting**: Generates detailed Markdown reports (CLI).
+- **HTTP Triggered** - Call on-demand via REST API
+- **Azure Blob Storage** - Reads from source folder, writes to styled output folders
+- **Multiple Styles** - Apply multiple AI styles in a single request
+- **Incremental Processing** - Skips already-processed images
+- **Original Copies** - Automatically copies originals to `original/` folder
 
-## Output Folder Structure
+## Output Structure
 
 ```
-target/
+styled/
 ├── original/         # Unmodified source copies
 ├── geometric_3d/     # Style variant 1
 ├── watercolor/       # Style variant 2
 └── ...
 ```
 
-## Prerequisites
+## Deployment
 
-- Python 3.9+
-- Active internet connection for API access.
+### Prerequisites
+- Azure Function App (Python 3.11, Linux, Consumption Plan)
+- Azure Storage Account with container
 
-## Installation
+### Required App Settings
+Configure these in Azure Portal → Function App → Configuration:
 
-```bash
-git clone https://github.com/ajayagr/style-sync.git
-cd style-sync
-pip install -r requirements.txt
-```
+| Setting | Description |
+|---------|-------------|
+| `AZURE_STORAGE_CONNECTION_STRING` | Storage account connection string |
+| `AZURE_API_KEY` | AI API key for image processing |
+| `AZURE_ENDPOINT_URL` | AI endpoint URL |
+| `CONTAINER_NAME` | Default container name (optional) |
+| `AzureWebJobsFeatureFlags` | Set to `EnableWorkerIndexing` |
 
-## Configuration
+### Deploy via GitHub Actions
+Push to `serverless` branch triggers automatic deployment.
 
-### Environment Variables
+## API Usage
 
-Create a `.env` file:
-
-```ini
-# Azure Foundry (FLUX.1-Kontext-pro)
-AZURE_ENDPOINT_URL=https://<your-endpoint>
-AZURE_API_KEY=<your-api-key>
-
-# Stability AI (Alternative)
-STABILITY_API_KEY=<your-api-key>
-
-# Azure Blob Storage (for Azure Function)
-AZURE_STORAGE_CONNECTION_STRING=<your-connection-string>
-CONTAINER_NAME=file-container
-```
-
-### Style Configuration
-
-Edit `config.yaml`:
-
-```yaml
-provider: azure # Options: azure, stability
-
-styles:
-  - index: "01"
-    name: "geometric_3d"
-    prompt_text: "Turn this into a geometric 3d abstract art piece"
-    strength: 0.6
-
-  - index: "02"
-    name: "watercolor"
-    prompt_text: "Transform into a watercolor painting"
-    strength: 0.5
-```
-
-## Usage
-
-### CLI - Interactive Mode
-
-```bash
-python main.py
-```
-
-### CLI - Direct Mode
-
-```bash
-python main.py --source "./images" --output "./styled" --config "config.yaml"
-```
-
-### Azure Function (Serverless)
-
-**Endpoint:** `POST https://stylesync-function.azurewebsites.net/api/stylesync`
+**Endpoint:** `POST https://<function-app>.azurewebsites.net/api/stylesync`
 
 **Request Body:**
 ```json
 {
-  "source_folder": "originals/",
-  "output_folder": "styled/",
-  "container": "file-container",
-  "provider": "azure",
-  "styles": [
-    {"index": "01", "name": "geometric_3d", "prompt_text": "...", "strength": 0.6}
-  ]
+    "source_folder": "originals/",
+    "output_folder": "styled/",
+    "container": "file-container",
+    "styles": [
+        {
+            "name": "geometric_3d",
+            "prompt_text": "Turn this into geometric 3D abstract art, low poly, vibrant colors"
+        },
+        {
+            "name": "watercolor",
+            "prompt_text": "Transform into a beautiful watercolor painting"
+        }
+    ]
+}
+```
+
+**Response:**
+```json
+{
+    "status": "completed",
+    "source": "file-container/originals/",
+    "output": "file-container/styled/",
+    "processed": ["geometric_3d/image1.jpg", "watercolor/image1.jpg"],
+    "copied": ["original/image1.jpg"],
+    "failed": [],
+    "skipped": []
 }
 ```
 
@@ -113,20 +80,26 @@ python main.py --source "./images" --output "./styled" --config "config.yaml"
 
 ```
 stylesync/
-├── main.py              # CLI entry point
-├── function_app.py      # Azure Function handler
-├── sync.py              # Sync logic
-├── clients/             # AI provider implementations
-├── storage/             # Storage providers (Local, OneDrive, Blob)
-├── config.yaml          # Style configuration
-├── .github/workflows/   # CI/CD pipeline
-└── report/              # Generated execution reports (CLI)
+├── StyleSyncFunction/
+│   ├── __init__.py       # Function handler
+│   └── function.json     # HTTP trigger binding
+├── host.json             # Function app settings
+├── requirements.txt      # Python dependencies
+└── .github/workflows/    # CI/CD pipeline
 ```
 
-## Deployment
+## Local Development
 
-The Azure Function auto-deploys via GitHub Actions on push to `main` or `azure-function` branches.
+```bash
+# Install Azure Functions Core Tools
+npm install -g azure-functions-core-tools@4
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run locally
+func start
+```
 
 ## License
-
 MIT

@@ -1,11 +1,9 @@
-name: Deploy StyleSync Azure Function
-# Deployment triggered: 2025-12-29
+name: Deploy StyleSync Serverless Function
 
 on:
   push:
     branches:
-      - main
-      - azure-function
+      - serverless
   workflow_dispatch:
 
 env:
