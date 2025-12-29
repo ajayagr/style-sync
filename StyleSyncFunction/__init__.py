@@ -131,7 +131,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         "source_folder": "originals/",
         "output_folder": "styled/",
         "container": "file-container",
-        "styles": [...]  // Optional - uses defaults if not provided
+        "styles": [...]  (Optional - uses defaults if not provided)
     }
     """
     logging.info("StyleSync function triggered")
